@@ -1,0 +1,109 @@
+import pandas as pd
+import re
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report
+from transformers import BertTokenizer, TFBertModel
+from tensorflow.keras.layers import Dense, LSTM, Embedding, Concatenate, Input, GlobalMaxPooling1D
+from tensorflow.keras.models import Model
+from tensorflow.keras.optimizers import Adam
+import tensorflow as tf
+
+# Adım 1: Veri setini indiren fonksiyon
+def download_dataset():
+    file_path = '‪/content/bbc_data_1_2.xlsx'
+    data = pd.read_excel('bbc_data_1_2.xlsx')
+    return data
+
+# Adım 2: Veriyi temizleyen fonksiyon
+def clean_text(text):
+    text = re.sub(r'[^\w\s]', '', text)  # Noktalama işaretlerini kaldırma
+    text = re.sub(r'\s+', ' ', text)    # Birden fazla boşluğu tek boşlukla değiştirme
+    text = text.lower()                 # Metni küçük harfe dönüştürme
+    return text
+
+# Adım 3: Eksik değerleri doldurma
+def fill_missing_values(data):
+    data.dropna(inplace=True)
+    return data
+
+# Adım 4: BERT + LSTM Ensemble Modeli Oluşturma
+def create_ensemble_model():
+    # BERT modeli
+    bert_model = TFBertModel.from_pretrained("bert-base-uncased")
+    bert_input_ids = Input(shape=(128,), dtype=tf.int32, name='input_ids')
+    bert_attention_mask = Input(shape=(128,), dtype=tf.int32, name='attention_mask')
+    bert_output = bert_model(bert_input_ids, attention_mask=bert_attention_mask).last_hidden_state
+    bert_pooling = GlobalMaxPooling1D()(bert_output)
+
+    # LSTM modeli
+    lstm_input = Input(shape=(128,), name='lstm_input')
+    embedding = Embedding(input_dim=5000, output_dim=128, input_length=128)(lstm_input)
+    lstm_output = LSTM(64, return_sequences=True)(embedding)
+    lstm_pooling = GlobalMaxPooling1D()(lstm_output)
+
+    # Ensemble (BERT ve LSTM çıktılarının birleştirilmesi)
+    merged_output = Concatenate()([bert_pooling, lstm_pooling])
+
+    # Tam bağlantılı katman ve sınıflandırma
+    dense_output = Dense(64, activation='relu')(merged_output)
+    final_output = Dense(5, activation='softmax')(dense_output)  # 5 sınıf örneği
+    model = Model(inputs=[bert_input_ids, bert_attention_mask, lstm_input], outputs=final_output)
+
+    return model
+
+# Adım 5: Veriyi hazırlayan fonksiyon
+def prepare_dataset(data, tokenizer):
+    inputs = tokenizer(data['text'].tolist(), padding="max_length", truncation=True, max_length=128, return_tensors="tf")
+    labels = tf.convert_to_tensor(data['category'].values)  # Kategorileri tensöre dönüştür
+    return inputs, labels
+
+# Adım 6: Modeli eğiten fonksiyon
+def train_ensemble_model(model, inputs, labels):
+    optimizer = Adam(learning_rate=2e-5)
+    model.compile(optimizer=optimizer, loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+
+    history = model.fit(
+        [inputs['input_ids'], inputs['attention_mask'], inputs['input_ids']],  # Hem BERT hem LSTM aynı input_ids'i kullanıyor
+        labels,
+        validation_split=0.2,
+        epochs=3,
+        batch_size=16
+    )
+    return model
+
+# Adım 7: Sonuçları raporlayan fonksiyon
+def report_results(model, inputs, labels):
+    predictions = model.predict([inputs['input_ids'], inputs['attention_mask'], inputs['input_ids']])
+    preds = predictions.argmax(axis=-1)
+    report = classification_report(labels, preds)
+    print(report)
+
+# Ana fonksiyon
+def main():
+    # Adım 1: Veri setini indirme
+    data = download_dataset()
+
+    # Adım 2: Veriyi temizleme
+    data['text'] = data['text'].apply(clean_text)
+
+    # Adım 3: Eksik değerleri doldurma
+    data = fill_missing_values(data)
+
+    # Adım 4: Tokenizer oluşturma
+    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+
+    # Adım 5: Veriyi hazırlama
+    inputs, labels = prepare_dataset(data, tokenizer)
+
+    # Adım 6: Ensemble modeli oluşturma
+    ensemble_model = create_ensemble_model()
+
+    # Adım 7: Modeli eğitme
+    trained_model = train_ensemble_model(ensemble_model, inputs, labels)
+
+    # Adım 8: Sonuçları raporlama
+    report_results(trained_model, inputs, labels)
+
+# Ana fonksiyonu çağırma
+if __name__ == "__main__":
+    main()
